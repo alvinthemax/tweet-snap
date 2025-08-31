@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Snap Tweets — extract text</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background:#f6f8fa; color:#111; padding:20px; }
+    h1 { font-size:1.2rem; margin-bottom:8px; }
+    textarea { width:100%; min-height:100px; padding:10px; font-family:monospace; border:1px solid #d0d7de; border-radius:6px; }
+    .controls { display:flex; gap:8px; margin-top:8px; }
+    button { padding:8px 12px; border-radius:8px; border:1px solid #d0d7de; background:white; cursor:pointer; }
+    button.primary { background:#0b69ff; color:white; border-color: #0955d4; }
+    .info { margin-top:8px; color:#555; font-size:0.9rem; }
+    .list { margin-top:16px; display:flex; flex-direction:column; gap:10px; }
+    .card { background:white; padding:12px; border-radius:8px; border:1px solid #e6e9ee; }
+    .meta { font-size:0.85rem; color:#666; margin-bottom:6px; display:flex; justify-content:space-between; gap:8px; align-items:center; }
+    .tweet-text { white-space:pre-wrap; font-size:1rem; }
+    .small { font-size:0.85rem; color:#666; }
+    .error { color:#b00020; font-weight:600; }
+  </style>
+</head>
+<body>
+  <h1>Snap Tweets — paste Tweet links</h1>
+
+  <label class="small">Paste tweet URLs (one per line):</label>
+  <textarea id="links" placeholder="https://twitter.com/username/status/1234567890"></textarea>
+
+  <div class="controls">
+    <button id="snapBtn" class="primary">Snap Tweets</button>
+    <button id="copyAllBtn">Copy All</button>
+    <button id="clearBtn">Clear</button>
+  </div>
+
+  <div id="status" class="info"></div>
+  <div id="results" class="list"></div>
+
+  <script>
+    const PROXY_URL = "/api/fetch?url="; // use our Vercel proxy
+
+    const linksInput = document.getElementById("links");
+    const snapBtn = document.getElementById("snapBtn");
+    const copyAllBtn = document.getElementById("copyAllBtn");
+    const clearBtn = document.getElementById("clearBtn");
+    const results = document.getElementById("results");
+    const status = document.getElementById("status");
+
+    function isTwitterUrl(u) {
+      try {
+        const url = new URL(u);
+        return /twitter\.com$|x\.com$/.test(url.hostname) && /\/status\/\d+/.test(url.pathname);
+      } catch { return false; }
+    }
+
+    async function fetchOEmbed(tweetUrl) {
+      const endpoint = "https://publish.twitter.com/oembed?url=" + encodeURIComponent(tweetUrl) + "&omit_script=true";
+      const target = PROXY_URL + encodeURIComponent(endpoint);
+      const res = await fetch(target);
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const json = await res.json();
+      return json.html;
+    }
+
+    function extractTextFromOEmbedHtml(htmlString) {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(htmlString, "text/html");
+      const block = doc.querySelector("blockquote");
+      if (!block) return null;
+      block.querySelectorAll("a").forEach(a => a.remove());
+      let lines = [];
+      block.childNodes.forEach(node => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          const t = node.textContent.trim();
+          if (t) lines.push(t);
+        } else if (node.nodeType === Node.ELEMENT_NODE) {
+          lines.push(node.textContent.trim());
+        }
+      });
+      return lines.length ? lines.filter(Boolean).join("\n") : block.textContent.trim();
+    }
+
+    function makeCard(originalUrl, text, errorMsg) {
+      const card = document.createElement("div");
+      card.className = "card";
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      const urlSpan = document.createElement("div");
+      urlSpan.textContent = originalUrl;
+      urlSpan.style.flex = "1";
+      urlSpan.style.overflow = "hidden";
+      urlSpan.style.textOverflow = "ellipsis";
+      urlSpan.style.whiteSpace = "nowrap";
+      const btn = document.createElement("button");
+      btn.textContent = "Copy";
+      btn.onclick = () => {
+        navigator.clipboard.writeText(text || "").then(() => {
+          btn.textContent = "Copied!";
+          setTimeout(() => (btn.textContent = "Copy"), 1200);
+        });
+      };
+      meta.appendChild(urlSpan);
+      meta.appendChild(btn);
+      card.appendChild(meta);
+
+      const content = document.createElement("div");
+      content.className = "tweet-text";
+      content.innerHTML = errorMsg ? '<span class="error">' + errorMsg + "</span>" : text;
+      card.appendChild(content);
+      return card;
+    }
+
+    async function snapAll() {
+      results.innerHTML = "";
+      status.textContent = "";
+      const lines = linksInput.value.split("\n").map(s => s.trim()).filter(Boolean);
+      if (!lines.length) { status.textContent = "Paste tweet links first."; return; }
+
+      status.textContent = `Processing ${lines.length} link(s)...`;
+
+      const extracted = [];
+      for (const url of lines) {
+        if (!isTwitterUrl(url)) {
+          results.appendChild(makeCard(url, "", "Not a valid tweet URL"));
+          extracted.push("");
+          continue;
+        }
+        try {
+          const html = await fetchOEmbed(url);
+          const text = extractTextFromOEmbedHtml(html) || "";
+          results.appendChild(makeCard(url, text, null));
+          extracted.push(text);
+        } catch (err) {
+          results.appendChild(makeCard(url, "", "Fetch error: " + err.message));
+          extracted.push("");
+        }
+      }
+
+      status.textContent = "Done. Copy as needed.";
+      copyAllBtn.onclick = async () => {
+        const payload = extracted.join("\n\n");
+        try {
+          await navigator.clipboard.writeText(payload);
+          copyAllBtn.textContent = "Copied All!";
+          setTimeout(() => (copyAllBtn.textContent = "Copy All"), 1400);
+        } catch (e) { alert("Failed to copy"); }
+      };
+    }
+
+    snapBtn.addEventListener("click", snapAll);
+    clearBtn.addEventListener("click", () => { linksInput.value=""; results.innerHTML=""; status.textContent=""; });
+  </script>
+</body>
+  </html>
